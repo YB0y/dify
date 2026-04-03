@@ -3,7 +3,7 @@ import logging
 import random
 import time
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import click
 from sqlalchemy.orm import Session, sessionmaker
@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from opentelemetry.metrics import Counter, Histogram
+
+
+class RelatedCountsDict(TypedDict):
+    node_executions: int
+    offloads: int
+    app_logs: int
+    trigger_logs: int
+    pauses: int
+    pause_reasons: int
 
 
 class WorkflowRunCleanupMetrics:
@@ -230,7 +239,7 @@ class WorkflowRunCleanup:
 
         total_runs_deleted = 0
         total_runs_targeted = 0
-        related_totals = self._empty_related_counts() if self.dry_run else None
+        related_totals: RelatedCountsDict | None = self._empty_related_counts() if self.dry_run else None
         batch_index = 0
         last_seen: tuple[datetime.datetime, str] | None = None
         status = "success"
@@ -312,8 +321,7 @@ class WorkflowRunCleanup:
                         int((time.monotonic() - count_start) * 1000),
                     )
                     if related_totals is not None:
-                        for key in related_totals:
-                            related_totals[key] += batch_counts.get(key, 0)
+                        self._accumulate_related_counts(related_totals, batch_counts)
                     sample_ids = ", ".join(run.id for run in free_runs[:5])
                     click.echo(
                         click.style(
@@ -506,7 +514,7 @@ class WorkflowRunCleanup:
         return trigger_repo.count_by_run_ids(run_ids)
 
     @staticmethod
-    def _empty_related_counts() -> dict[str, int]:
+    def _empty_related_counts() -> RelatedCountsDict:
         return {
             "node_executions": 0,
             "offloads": 0,
@@ -517,7 +525,7 @@ class WorkflowRunCleanup:
         }
 
     @staticmethod
-    def _format_related_counts(counts: dict[str, int]) -> str:
+    def _format_related_counts(counts: RelatedCountsDict) -> str:
         return (
             f"node_executions {counts['node_executions']}, "
             f"offloads {counts['offloads']}, "
@@ -526,6 +534,15 @@ class WorkflowRunCleanup:
             f"pauses {counts['pauses']}, "
             f"pause_reasons {counts['pause_reasons']}"
         )
+
+    @staticmethod
+    def _accumulate_related_counts(totals: RelatedCountsDict, batch: dict[str, int]) -> None:
+        totals["node_executions"] += batch.get("node_executions", 0)
+        totals["offloads"] += batch.get("offloads", 0)
+        totals["app_logs"] += batch.get("app_logs", 0)
+        totals["trigger_logs"] += batch.get("trigger_logs", 0)
+        totals["pauses"] += batch.get("pauses", 0)
+        totals["pause_reasons"] += batch.get("pause_reasons", 0)
 
     def _count_node_executions(self, session: Session, runs: Sequence[WorkflowRun]) -> tuple[int, int]:
         run_ids = [run.id for run in runs]
